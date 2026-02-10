@@ -55,6 +55,13 @@ $uid = $client->user()->register('username', 'password', 'user@example.com');
 $res = $client->user()->login('username', 'password');
 // $res['status'] > 0 为成功（用户 ID），含 username、email 等
 
+// 为登录用户颁发 JWT token（需配置 JWT 密钥）
+use UCenter\Sdk\Jwt\JwtToken;
+$jwt = new JwtToken('your_jwt_secret', 7200);
+$token = $jwt->issue(['sub' => (string)$res['status'], 'username' => $res['username'] ?? '']);
+// 验证 token
+$payload = $jwt->verify($token);  // 含 sub、username、iat、exp 等
+
 // 获取用户信息（含扩展字段：phone, wechat_unionid, nickname, avatar, qq_union_id, weibo_openid, douyin_openid, is_member 等）
 $user = $client->user()->getUser('username');        // 按用户名
 $user = $client->user()->getUser('123', true);       // 按 uid（第二参数 isuid=true）
