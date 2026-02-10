@@ -1,5 +1,5 @@
 {
-    "name": "ucenter/sdk-php",
+    "name": "fcwh/ucentersdk-php",
     "description": "PHP SDK for UCenter User Center API - 第三方应用访问用户中心",
     "type": "library",
     "license": "MIT",
