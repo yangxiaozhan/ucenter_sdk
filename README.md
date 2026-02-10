@@ -21,11 +21,49 @@ composer require fcwh/ucentersdk-php
 
 ## 配置
 
-在 UCenter 管理后台创建应用后，可获得 **应用 ID (appid)** 和 **密钥 (secret)**。请求时需在 Header 中携带 `appid`、`nonce`、`t`、`token`、`sign`，SDK 会自动处理签名与 Token 获取/续签。
+- **直连数据库（推荐）**：仅需数据库连接，不暴露接口，见下方「直连数据库」。
+- **HTTP 模式**：需 UCenter 服务端地址及 appid/secret。
 
 ## 使用说明
 
-### 初始化客户端
+### 直连数据库（最少配置，无需暴露接口）
+
+建表：`mysql -u root -p 数据库名 < server/schema.sql`，然后：
+
+```php
+use UCenter\Sdk\UCenterClient;
+
+$client = UCenterClient::fromDatabase([
+    'host' => '127.0.0.1',
+    'dbname' => 'ucenter',
+    'username' => 'root',
+    'password' => 'xxx',
+]);
+// 无需 baseUrl、appId、secret；仅支持用户 register/login/get_user/edit（含绑定）
+```
+
+也可传入 `require 'server/config.php'` 或环境变量（见 `server/config.example.php`）。
+
+### 混合模式（推荐）：主逻辑 UCenter，绑定关系存本地 DB
+
+注册/登录/获取用户/编辑等**全部走 UCenter 接口**；仅**绑定关系**（手机/微信/微博/QQ ↔ 用户）存本地表 `uc_bindings`，便于按标识解析登录。
+
+1. 建表：执行 `server/schema.sql`（至少要有 `uc_bindings` 表）。
+2. 初始化：
+
+```php
+use UCenter\Sdk\UCenterClient;
+
+$client = UCenterClient::withBindingStore(
+    'https://uc.example.com',   // UCenter 地址
+    'your_appid',
+    'your_secret',
+    [ 'host' => '127.0.0.1', 'dbname' => 'ucenter', 'username' => 'root', 'password' => 'xxx' ]  // 绑定表所在库
+);
+// register/login/get_user/edit 走 UCenter；bind/unbind/getBindings 及 类型+标识 登录会读写本地 uc_bindings
+```
+
+### 初始化客户端（仅 HTTP 模式）
 
 ```php
 use UCenter\Sdk\UCenterClient;
@@ -36,7 +74,6 @@ $client = new UCenterClient(
     'your_secret'
 );
 
-// 可选：设置请求超时（秒）
 $client->setTimeout(15);
 ```
 
@@ -47,9 +84,29 @@ $client->setTimeout(15);
 $uid = $client->user()->register('username', 'password', 'user@example.com');
 // $uid > 0 为成功（返回用户 ID），负数见文档错误码
 
-// 用户登录
+// 用户登录（支持用户名+密码，或 类型+标识 自动注册登录）
 $res = $client->user()->login('username', 'password');
+// 类型+标识：第一参数为类型常量，第二参数为标识；未注册则自动注册后再登录
+use UCenter\Sdk\Api\UserApi;
+$res = $client->user()->login(UserApi::LOGIN_TYPE_PHONE, '13800138000');
+$res = $client->user()->login(UserApi::LOGIN_TYPE_WECHAT_UNIONID, 'wx_unionid_xxx');
+$res = $client->user()->login(UserApi::LOGIN_TYPE_WEIBO_OPENID, 'weibo_openid_xxx');
+$res = $client->user()->login(UserApi::LOGIN_TYPE_QQ_UNIONID, 'qq_unionid_xxx');
+// 第三参数起同原 login；类型+标识时可通过 options 传 email_domain、extra_profile
+$res = $client->user()->login(UserApi::LOGIN_TYPE_PHONE, '13800138000', 0, false, 0, '', [
+    'email_domain' => 'myapp.local',
+    'extra_profile' => ['nickname' => '昵称'],
+]);
 // $res['status'] > 0 为成功（用户 ID），含 username、email 等
+
+// 用户绑定：一个账号绑定手机/微信/微博/QQ 后，可用任意一种方式登录同一账号
+$client->user()->bind('username', UserApi::LOGIN_TYPE_PHONE, '13800138000');       // 绑定手机
+$client->user()->bind('username', UserApi::LOGIN_TYPE_WECHAT_UNIONID, 'wx_unionid');
+$client->user()->bind('username', UserApi::LOGIN_TYPE_WEIBO_OPENID, 'weibo_openid');
+$client->user()->bind('username', UserApi::LOGIN_TYPE_QQ_UNIONID, 'qq_unionid');
+$client->user()->unbind('username', UserApi::LOGIN_TYPE_PHONE);                    // 解绑手机
+$bindings = $client->user()->getBindings('username');  // 查看已绑定：phone, wechat_unionid, weibo_openid, qq_union_id
+// 说明：绑定后用该标识 login(类型, 标识) 登录到同一账号，需后端支持（按标识查用户或绑定时同步创建同 uid 的标识账号）
 
 // 为登录用户颁发 JWT token（需配置 JWT 密钥）
 use UCenter\Sdk\Jwt\JwtToken;

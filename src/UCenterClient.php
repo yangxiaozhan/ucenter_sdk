@@ -9,11 +9,16 @@ use UCenter\Sdk\Api\FriendApi;
 use UCenter\Sdk\Api\PmApi;
 use UCenter\Sdk\Api\TagApi;
 use UCenter\Sdk\Api\UserApi;
+use UCenter\Sdk\Backend\BackendInterface;
+use UCenter\Sdk\Backend\DatabaseBackend;
+use UCenter\Sdk\Binding\BindingStoreInterface;
+use UCenter\Sdk\Binding\DatabaseBindingStore;
 use UCenter\Sdk\Exception\UCenterException;
 
 /**
  * UCenter 客户端
- * 基于 document 中 UCenter 接口开发手册实现，支持 Header 鉴权（appid + nonce + t + token + sign）
+ * - HTTP 模式：baseUrl + appId + secret，请求远程 UCenter API
+ * - 直连数据库模式：仅需数据库配置，不暴露接口，直接操作 MySQL（fromDatabase）
  */
 class UCenterClient
 {
@@ -29,14 +34,47 @@ class UCenterClient
 
     private int $timeout = 10;
 
-    /** @var callable|null 可注入 HTTP 客户端，签名 (string $url, array $headers, string $body): array */
+    /** @var callable|null 可注入 HTTP 客户端 */
     private $httpClient;
+
+    /** @var BackendInterface|null 直连数据库时使用，不走 HTTP */
+    private ?BackendInterface $backend = null;
+
+    /** @var BindingStoreInterface|null 混合模式：主逻辑 UCenter HTTP，绑定关系存本地 DB */
+    private ?BindingStoreInterface $bindingStore = null;
 
     public function __construct(string $baseUrl, string $appId, string $secret)
     {
         $this->baseUrl = rtrim($baseUrl, '/');
         $this->appId = $appId;
         $this->secret = $secret;
+    }
+
+    /**
+     * 直连数据库，无需配置 baseUrl/appId/secret，不暴露 HTTP 接口
+     * @param array|PDO $config 数据库配置 array(host, dbname, username, password, port?, charset?) 或 PDO 实例
+     */
+    public static function fromDatabase($config): self
+    {
+        $client = new self('', '', '');
+        $client->backend = new DatabaseBackend($config);
+        return $client;
+    }
+
+    /**
+     * 混合模式：主逻辑走 UCenter（HTTP），绑定关系存本地 DB（仅 uc_bindings 表）
+     * 需先执行 server/schema.sql 中的 uc_bindings 建表
+     */
+    public static function withBindingStore(string $baseUrl, string $appId, string $secret, $dbConfig): self
+    {
+        $client = new self($baseUrl, $appId, $secret);
+        $client->bindingStore = new DatabaseBindingStore($dbConfig);
+        return $client;
+    }
+
+    public function getBindingStore(): ?BindingStoreInterface
+    {
+        return $this->bindingStore;
     }
 
     public function getBaseUrl(): string
@@ -109,6 +147,10 @@ class UCenterClient
      */
     public function request(string $path, array $params = [], bool $needToken = true): array
     {
+        if ($this->backend !== null) {
+            return $this->backend->request($path, $params);
+        }
+
         $url = $this->baseUrl . '/api/?/' . $path;
         $nonce = bin2hex(random_bytes(16));
         $t = time();
@@ -150,6 +192,10 @@ class UCenterClient
      */
     public function requestRaw(string $path, array $params = [], bool $needToken = true): string
     {
+        if ($this->backend !== null) {
+            throw new UCenterException('直连数据库模式不支持 requestRaw（如 synLogin/synLogout）', 0);
+        }
+
         $url = $this->baseUrl . '/api/?/' . $path;
         $nonce = bin2hex(random_bytes(16));
         $t = time();

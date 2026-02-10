@@ -23,4 +23,5 @@ document/
 composer.lock
 
 # Demo 本地配置（含密钥）
-demo/config.php
+demo/
+docs/

@@ -10,6 +10,37 @@ namespace UCenter\Sdk\Api;
  */
 class UserApi extends BaseApi
 {
+    /** 第三方登录类型：手机号 */
+    public const LOGIN_TYPE_PHONE = 'phone';
+    /** 第三方登录类型：微信 unionid */
+    public const LOGIN_TYPE_WECHAT_UNIONID = 'wechat_unionid';
+    /** 第三方登录类型：微博 openid */
+    public const LOGIN_TYPE_WEIBO_OPENID = 'weibo_openid';
+    /** 第三方登录类型：QQ unionid */
+    public const LOGIN_TYPE_QQ_UNIONID = 'qq_unionid';
+
+    /** 支持的第三方登录类型及其对应的用户扩展字段名 */
+    private const LOGIN_TYPE_FIELD = [
+        self::LOGIN_TYPE_PHONE => 'phone',
+        self::LOGIN_TYPE_WECHAT_UNIONID => 'wechat_unionid',
+        self::LOGIN_TYPE_WEIBO_OPENID => 'weibo_openid',
+        self::LOGIN_TYPE_QQ_UNIONID => 'qq_union_id',
+    ];
+
+    /** 类型前缀，用于生成默认用户名 */
+    private const LOGIN_TYPE_PREFIX = [
+        self::LOGIN_TYPE_PHONE => 'phone_',
+        self::LOGIN_TYPE_WECHAT_UNIONID => 'wechat_',
+        self::LOGIN_TYPE_WEIBO_OPENID => 'weibo_',
+        self::LOGIN_TYPE_QQ_UNIONID => 'qq_',
+    ];
+
+    /** 默认用户名最大长度（UCenter 常见限制） */
+    private const USERNAME_MAX_LEN = 50;
+
+    /** 默认邮箱域名（用于生成虚拟邮箱） */
+    private const DEFAULT_EMAIL_DOMAIN = 'uc.local';
+
     /**
      * 用户注册
      * @return int 大于 0 为用户 ID；负数见文档（-1 用户名不合法，-2 不允许词语，-3 用户名已存在，-4/-5/-6 Email 相关）
@@ -30,20 +61,144 @@ class UserApi extends BaseApi
 
     /**
      * 用户登录
+     * - 传用户名+密码：login('username', 'password')，行为与原有一致。
+     * - 传类型+标识：第一参数为 LOGIN_TYPE_PHONE | LOGIN_TYPE_WECHAT_UNIONID | LOGIN_TYPE_WEIBO_OPENID | LOGIN_TYPE_QQ_UNIONID，
+     *   第二参数为标识（手机号/unionid/openid），未注册则按类型+标识生成默认用户名/邮箱/密码并自动注册后再登录；$options 可传 email_domain、extra_profile。
+     *
+     * @param string $usernameOrType   用户名，或第三方登录类型常量
+     * @param string $passwordOrIdentifier 密码，或第三方标识（手机号/unionid/openid）
+     * @param int    $isuid            是否按 uid 登录（仅用户名+密码时有效）
+     * @param bool   $checkques        是否验证安全提问
+     * @param int    $questionid       安全提问索引
+     * @param string $answer           安全提问答案
+     * @param array  $options          类型+标识登录时有效：email_domain、extra_profile
      * @return array{status: int, username?: string, email?: string} status>0 为 uid，-1 用户不存在，-2 密码错，-3 安全提问错
      */
-    public function login(string $username, string $password, int $isuid = 0, bool $checkques = false, int $questionid = 0, string $answer = ''): array
+    public function login(string $usernameOrType, string $passwordOrIdentifier, int $isuid = 0, bool $checkques = false, int $questionid = 0, string $answer = '', array $options = []): array
     {
+        if (isset(self::LOGIN_TYPE_FIELD[$usernameOrType])) {
+            return $this->loginByTypeAndIdentifier($usernameOrType, $passwordOrIdentifier, $options);
+        }
+
         $params = [
-            'username' => $username,
-            'password' => $password,
+            'username' => $usernameOrType,
+            'password' => $passwordOrIdentifier,
             'isuid' => $isuid,
             'checkques' => $checkques ? 1 : 0,
             'questionid' => $questionid,
             'answer' => $answer,
         ];
         $res = $this->client->request('user/login', $params);
-        // 兼容服务端 { ret, data: { uid/status, username, email } } 结构
+        $data = $res['data'] ?? $res;
+        if (isset($data['uid']) && !isset($data['status'])) {
+            $data['status'] = (int) $data['uid'];
+        }
+        return $data;
+    }
+
+    /**
+     * 按「类型 + 标识」生成统一的默认用户名、邮箱、密码（用于第三方登录/自动注册）
+     *
+     * @param string|null $emailDomain 虚拟邮箱域名，null 则使用 uc.local
+     * @return array{username: string, email: string, password: string}
+     */
+    public function generateCredentials(string $type, string $identifier, ?string $emailDomain = null): array
+    {
+        $prefix = self::LOGIN_TYPE_PREFIX[$type] ?? ($type . '_');
+        $safe = preg_replace('/[^a-zA-Z0-9_]/', '_', $identifier);
+        $rawUsername = $prefix . $safe;
+        $username = mb_substr($rawUsername, 0, self::USERNAME_MAX_LEN);
+
+        $domain = $emailDomain !== null && $emailDomain !== '' ? $emailDomain : self::DEFAULT_EMAIL_DOMAIN;
+        $email = $username . '@' . $domain;
+
+        $password = substr(bin2hex(hash('sha256', $type . '|' . $identifier, true)), 0, 16);
+
+        return ['username' => $username, 'email' => $email, 'password' => $password];
+    }
+
+    /**
+     * 类型+标识登录（未注册则自动注册），供 login() 内部调用
+     * 若启用绑定存储：先查本地绑定表得 uid，再走 UCenter get_user；否则走 UCenter login/register
+     */
+    private function loginByTypeAndIdentifier(string $type, string $identifier, array $options): array
+    {
+        $store = $this->client->getBindingStore();
+        if ($store !== null) {
+            $uid = $store->findUid($type, $identifier);
+            if ($uid !== null) {
+                $user = $this->getUser((string) $uid, true);
+                if (!empty($user['uid'])) {
+                    return [
+                        'status' => (int) $user['uid'],
+                        'uid' => (int) $user['uid'],
+                        'username' => $user['username'] ?? '',
+                        'email' => $user['email'] ?? '',
+                    ];
+                }
+            }
+        }
+
+        $emailDomain = $options['email_domain'] ?? null;
+        $extraProfile = $options['extra_profile'] ?? [];
+
+        $cred = $this->generateCredentials($type, $identifier, $emailDomain);
+        $res = $this->doLogin($cred['username'], $cred['password']);
+
+        $status = (int) ($res['status'] ?? 0);
+        if ($status > 0) {
+            if ($store !== null) {
+                $store->add($status, $type, $identifier);
+            }
+            return $res;
+        }
+
+        if ($status === -1) {
+            $uid = $this->register($cred['username'], $cred['password'], $cred['email']);
+            if ($uid <= 0) {
+                throw new \UCenter\Sdk\Exception\UCenterException(
+                    '第三方自动注册失败，ret=' . $uid . '（可能用户名/邮箱已被占用）',
+                    0,
+                    null,
+                    ['ret' => $uid]
+                );
+            }
+            $fieldName = self::LOGIN_TYPE_FIELD[$type];
+            $this->updateProfile($cred['username'], array_merge([$fieldName => $identifier], $extraProfile));
+            if ($store !== null) {
+                $store->add($uid, $type, $identifier);
+            }
+            return $this->doLogin($cred['username'], $cred['password']);
+        }
+
+        if ($status === -2) {
+            throw new \UCenter\Sdk\Exception\UCenterException(
+                '该标识已绑定其他账号，无法使用统一生成的密码登录（请使用原账号密码或找回密码）',
+                -2,
+                null,
+                $res
+            );
+        }
+
+        throw new \UCenter\Sdk\Exception\UCenterException(
+            '登录失败，status=' . $status,
+            $status,
+            null,
+            $res
+        );
+    }
+
+    /** 实际请求 user/login 接口（避免 login 递归） */
+    private function doLogin(string $username, string $password): array
+    {
+        $res = $this->client->request('user/login', [
+            'username' => $username,
+            'password' => $password,
+            'isuid' => 0,
+            'checkques' => 0,
+            'questionid' => 0,
+            'answer' => '',
+        ]);
         $data = $res['data'] ?? $res;
         if (isset($data['uid']) && !isset($data['status'])) {
             $data['status'] = (int) $data['uid'];
@@ -78,6 +233,83 @@ class UserApi extends BaseApi
         $params = ['username' => $username, 'isuid' => $isuid ? 1 : 0];
         $res = $this->client->request('user/get_user', $params);
         return $res['data'] ?? $res;
+    }
+
+    /**
+     * 将手机号/微信/微博/QQ 绑定到当前账号，绑定后可用该标识通过 login(类型, 标识) 登录同一账号
+     * （需后端支持：按标识查用户或绑定时同步创建同 uid 的标识账号，否则仅写入扩展字段）
+     *
+     * @param string $username   用户名或 uid 字符串
+     * @param string $type       LOGIN_TYPE_PHONE | LOGIN_TYPE_WECHAT_UNIONID | LOGIN_TYPE_WEIBO_OPENID | LOGIN_TYPE_QQ_UNIONID
+     * @param string $identifier 要绑定的标识（手机号、unionid、openid）
+     * @param bool   $isuid      是否按 uid 查找用户
+     * @return int 1 成功，0 无修改，负数见文档
+     */
+    public function bind(string $username, string $type, string $identifier, bool $isuid = false): int
+    {
+        $field = self::LOGIN_TYPE_FIELD[$type] ?? null;
+        if ($field === null) {
+            throw new \InvalidArgumentException('不支持的绑定类型: ' . $type . '，支持: phone, wechat_unionid, weibo_openid, qq_unionid');
+        }
+        $ret = $this->updateProfile($username, [$field => $identifier], $isuid);
+        $store = $this->client->getBindingStore();
+        if ($ret > 0 && $store !== null) {
+            $user = $this->getUser($username, $isuid);
+            if (!empty($user['uid'])) {
+                $store->add((int) $user['uid'], $type, $identifier);
+            }
+        }
+        return $ret;
+    }
+
+    /**
+     * 解除当前账号对某种登录方式的绑定（清空对应扩展字段）
+     *
+     * @param string $username 用户名或 uid 字符串
+     * @param string $type      LOGIN_TYPE_PHONE | LOGIN_TYPE_WECHAT_UNIONID | LOGIN_TYPE_WEIBO_OPENID | LOGIN_TYPE_QQ_UNIONID
+     * @param bool   $isuid     是否按 uid 查找用户
+     * @return int 1 成功，0 无修改，负数见文档
+     */
+    public function unbind(string $username, string $type, bool $isuid = false): int
+    {
+        $field = self::LOGIN_TYPE_FIELD[$type] ?? null;
+        if ($field === null) {
+            throw new \InvalidArgumentException('不支持的绑定类型: ' . $type . '，支持: phone, wechat_unionid, weibo_openid, qq_unionid');
+        }
+        $store = $this->client->getBindingStore();
+        if ($store !== null) {
+            $user = $this->getUser($username, $isuid);
+            if (!empty($user['uid'])) {
+                $store->remove((int) $user['uid'], $type);
+            }
+        }
+        return $this->updateProfile($username, [$field => ''], $isuid);
+    }
+
+    /**
+     * 获取当前账号已绑定的登录方式（手机号、微信、微博、QQ）
+     *
+     * @param string $username 用户名或 uid 字符串
+     * @param bool   $isuid    是否按 uid 查找用户
+     * @return array{phone: string, wechat_unionid: string, weibo_openid: string, qq_union_id: string} 未绑定的为空字符串
+     */
+    public function getBindings(string $username, bool $isuid = false): array
+    {
+        $store = $this->client->getBindingStore();
+        if ($store !== null) {
+            $user = $this->getUser($username, $isuid);
+            if (!empty($user['uid'])) {
+                return $store->getByUid((int) $user['uid']);
+            }
+            return ['phone' => '', 'wechat_unionid' => '', 'weibo_openid' => '', 'qq_union_id' => ''];
+        }
+        $user = $this->getUser($username, $isuid);
+        return [
+            'phone' => (string) ($user['phone'] ?? ''),
+            'wechat_unionid' => (string) ($user['wechat_unionid'] ?? ''),
+            'weibo_openid' => (string) ($user['weibo_openid'] ?? ''),
+            'qq_union_id' => (string) ($user['qq_union_id'] ?? ''),
+        ];
     }
 
     /**
