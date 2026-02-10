@@ -14,14 +14,10 @@ PHP SDK for UCenter 用户中心，供第三方应用通过 API 访问同一用�
 ## 安装
 
 ```bash
-composer require ucenter/sdk-php
+composer require fcwh/ucentersdk-php
 ```
 
-或在本仓库根目录执行：
-
-```bash
-composer install
-```
+富酬文化内部专用sdk
 
 ## 配置
 
