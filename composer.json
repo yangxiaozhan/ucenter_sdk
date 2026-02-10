@@ -1,0 +1,33 @@
+{
+    "name": "ucenter/sdk-php",
+    "description": "PHP SDK for UCenter User Center API - 第三方应用访问用户中心",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "UCenter SDK",
+            "email": "sdk@example.com"
+        }
+    ],
+    "require": {
+        "php": ">=7.4",
+        "ext-json": "*"
+    },
+    "suggest": {
+        "tencentcloud/sms": "发送短信（腾讯云）时安装，仅短信库无需全产品 SDK"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "UCenter\\Sdk\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "UCenter\\Sdk\\Tests\\": "tests/"
+        }
+    },
+    "minimum-stability": "stable"
+}
