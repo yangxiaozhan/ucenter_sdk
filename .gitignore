@@ -25,3 +25,4 @@ composer.lock
 # Demo 本地配置（含密钥）
 demo/
 docs/
+scripts/

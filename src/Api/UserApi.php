@@ -39,13 +39,24 @@ class UserApi extends BaseApi
     private const USERNAME_MAX_LEN = 50;
 
     /** 默认邮箱域名（用于生成虚拟邮箱） */
-    private const DEFAULT_EMAIL_DOMAIN = 'uc.local';
+    private const DEFAULT_EMAIL_DOMAIN = 'jiuzhoufeiyi.com';
 
     /**
      * 用户注册
+     * 若启用绑定存储且传入 bindType/bindIdentifier，注册成功后会写入绑定关系（并更新用户扩展字段），
+     * 与「类型+标识登录」先查绑定的逻辑一致，避免注册方式不同导致登录失败。
+     *
+     * @param string      $username       用户名
+     * @param string      $password      密码
+     * @param string      $email         邮箱
+     * @param int         $questionid     安全提问
+     * @param string      $answer        安全提问答案
+     * @param string      $regip         注册 IP
+     * @param string|null $bindType      可选。注册成功后写入绑定的类型：LOGIN_TYPE_PHONE | LOGIN_TYPE_WECHAT_UNIONID | LOGIN_TYPE_WEIBO_OPENID | LOGIN_TYPE_QQ_UNIONID
+     * @param string|null $bindIdentifier 可选。与 bindType 成对使用，绑定的标识（手机号/unionid/openid）
      * @return int 大于 0 为用户 ID；负数见文档（-1 用户名不合法，-2 不允许词语，-3 用户名已存在，-4/-5/-6 Email 相关）
      */
-    public function register(string $username, string $password, string $email, int $questionid = 0, string $answer = '', string $regip = ''): int
+    public function register(string $username, string $password, string $email, int $questionid = 0, string $answer = '', string $regip = '', ?string $bindType = null, ?string $bindIdentifier = null): int
     {
         $params = [
             'username' => $username,
@@ -55,15 +66,28 @@ class UserApi extends BaseApi
             'answer' => $answer,
             'regip' => $regip,
         ];
+        // print_r($params);
         $ret = $this->client->request('user/register', $params);
-        return (int) ($ret['ret'] ?? 0);
+        $uid = (int) ($ret['ret'] ?? 0);
+        if ($uid > 0 && $bindType !== null && $bindIdentifier !== null && $bindType !== '' && $bindIdentifier !== '') {
+            $field = self::LOGIN_TYPE_FIELD[$bindType] ?? null;
+            if ($field !== null) {
+                $this->updateProfile($username, [$field => $bindIdentifier], false);
+                $store = $this->client->getBindingStore();
+                if ($store !== null) {
+                    $store->add($uid, $bindType, $bindIdentifier);
+                }
+            }
+        }
+        return $uid;
     }
 
     /**
      * 用户登录
      * - 传用户名+密码：login('username', 'password')，行为与原有一致。
      * - 传类型+标识：第一参数为 LOGIN_TYPE_PHONE | LOGIN_TYPE_WECHAT_UNIONID | LOGIN_TYPE_WEIBO_OPENID | LOGIN_TYPE_QQ_UNIONID，
-     *   第二参数为标识（手机号/unionid/openid），未注册则按类型+标识生成默认用户名/邮箱/密码并自动注册后再登录；$options 可传 email_domain、extra_profile。
+     *   第二参数为标识（手机号/unionid/openid）。若启用绑定存储，会先检查绑定关系再决定用哪个账号登录，避免因注册方式不同导致登录失败；
+     *   未注册则按类型+标识生成默认用户名/邮箱/密码并自动注册后再登录；$options 可传 email_domain、extra_profile。
      *
      * @param string $usernameOrType   用户名，或第三方登录类型常量
      * @param string $passwordOrIdentifier 密码，或第三方标识（手机号/unionid/openid）
@@ -72,7 +96,7 @@ class UserApi extends BaseApi
      * @param int    $questionid       安全提问索引
      * @param string $answer           安全提问答案
      * @param array  $options          类型+标识登录时有效：email_domain、extra_profile
-     * @return array{status: int, username?: string, email?: string} status>0 为 uid，-1 用户不存在，-2 密码错，-3 安全提问错
+     * @return array{status: int, username?: string, email?: string, access_token?: string} status>0 为 uid；若已设置 JwtToken 则含 access_token
      */
     public function login(string $usernameOrType, string $passwordOrIdentifier, int $isuid = 0, bool $checkques = false, int $questionid = 0, string $answer = '', array $options = []): array
     {
@@ -93,7 +117,7 @@ class UserApi extends BaseApi
         if (isset($data['uid']) && !isset($data['status'])) {
             $data['status'] = (int) $data['uid'];
         }
-        return $data;
+        return $this->appendAccessTokenIfSuccess($data);
     }
 
     /**
@@ -107,10 +131,13 @@ class UserApi extends BaseApi
         $prefix = self::LOGIN_TYPE_PREFIX[$type] ?? ($type . '_');
         $safe = preg_replace('/[^a-zA-Z0-9_]/', '_', $identifier);
         $rawUsername = $prefix . $safe;
-        $username = mb_substr($rawUsername, 0, self::USERNAME_MAX_LEN);
+        $username = md5(mb_substr($rawUsername, 0, self::USERNAME_MAX_LEN));
 
         $domain = $emailDomain !== null && $emailDomain !== '' ? $emailDomain : self::DEFAULT_EMAIL_DOMAIN;
-        $email = $username . '@' . $domain;
+        $email = substr($username,8,16) . '@' . $domain;
+        if ($email === '@' || $domain === '') {
+            $email = $username . '@' . self::DEFAULT_EMAIL_DOMAIN;
+        }
 
         $password = substr(bin2hex(hash('sha256', $type . '|' . $identifier, true)), 0, 16);
 
@@ -119,7 +146,8 @@ class UserApi extends BaseApi
 
     /**
      * 类型+标识登录（未注册则自动注册），供 login() 内部调用
-     * 若启用绑定存储：先查本地绑定表得 uid，再走 UCenter get_user；否则走 UCenter login/register
+     * 若启用绑定存储：先检查绑定关系（先查本地绑定表得 uid，再走 UCenter get_user），
+     * 避免因注册方式不同导致同一标识对应不同账号而登录失败；否则走 UCenter login/register
      */
     private function loginByTypeAndIdentifier(string $type, string $identifier, array $options): array
     {
@@ -129,12 +157,13 @@ class UserApi extends BaseApi
             if ($uid !== null) {
                 $user = $this->getUser((string) $uid, true);
                 if (!empty($user['uid'])) {
-                    return [
+                    $data = [
                         'status' => (int) $user['uid'],
                         'uid' => (int) $user['uid'],
                         'username' => $user['username'] ?? '',
                         'email' => $user['email'] ?? '',
                     ];
+                    return $this->appendAccessTokenIfSuccess($data);
                 }
             }
         }
@@ -143,6 +172,7 @@ class UserApi extends BaseApi
         $extraProfile = $options['extra_profile'] ?? [];
 
         $cred = $this->generateCredentials($type, $identifier, $emailDomain);
+        // print_r($cred);
         $res = $this->doLogin($cred['username'], $cred['password']);
 
         $status = (int) ($res['status'] ?? 0);
@@ -150,7 +180,7 @@ class UserApi extends BaseApi
             if ($store !== null) {
                 $store->add($status, $type, $identifier);
             }
-            return $res;
+            return $this->appendAccessTokenIfSuccess($res);
         }
 
         if ($status === -1) {
@@ -163,12 +193,19 @@ class UserApi extends BaseApi
                     ['ret' => $uid]
                 );
             }
+            if ($cred['email'] !== '') {
+                $user = $this->getUser((string) $uid, true);
+                if (empty($user['email']) || trim((string) ($user['email'] ?? '')) === '') {
+                    $this->edit($cred['username'], '', '', $cred['email'], true, 0, '', null, null, null, null, null, null, null, null, null, false);
+                }
+            }
             $fieldName = self::LOGIN_TYPE_FIELD[$type];
             $this->updateProfile($cred['username'], array_merge([$fieldName => $identifier], $extraProfile));
             if ($store !== null) {
                 $store->add($uid, $type, $identifier);
             }
-            return $this->doLogin($cred['username'], $cred['password']);
+            $res = $this->doLogin($cred['username'], $cred['password']);
+            return $this->appendAccessTokenIfSuccess($res);
         }
 
         if ($status === -2) {
@@ -186,6 +223,29 @@ class UserApi extends BaseApi
             null,
             $res
         );
+    }
+
+    /**
+     * 登录成功时若已配置 JwtToken，则签发 access_token 并写入返回数组
+     * @param array $data 登录接口返回的数据（含 status/uid/username/email）
+     * @return array 原数据，成功且配置了 JWT 时增加 access_token 键
+     */
+    private function appendAccessTokenIfSuccess(array $data): array
+    {
+        $jwt = $this->client->getJwtToken();
+        if ($jwt === null) {
+            return $data;
+        }
+        $uid = (int) ($data['status'] ?? $data['uid'] ?? 0);
+        if ($uid <= 0) {
+            return $data;
+        }
+        $payload = [
+            'sub' => (string) $uid,
+            'username' => $data['username'] ?? '',
+        ];
+        $data['access_token'] = $jwt->issue($payload);
+        return $data;
     }
 
     /** 实际请求 user/login 接口（避免 login 递归） */
@@ -236,7 +296,8 @@ class UserApi extends BaseApi
     }
 
     /**
-     * 将手机号/微信/微博/QQ 绑定到当前账号，绑定后可用该标识通过 login(类型, 标识) 登录同一账号
+     * 将手机号/微信/微博/QQ 绑定到当前账号；绑定关系会写入绑定存储（若启用），
+     * 绑定后可用该标识通过 login(类型, 标识) 登录同一账号，与登录时「先检查绑定」逻辑一致。
      * （需后端支持：按标识查用户或绑定时同步创建同 uid 的标识账号，否则仅写入扩展字段）
      *
      * @param string $username   用户名或 uid 字符串
@@ -251,19 +312,28 @@ class UserApi extends BaseApi
         if ($field === null) {
             throw new \InvalidArgumentException('不支持的绑定类型: ' . $type . '，支持: phone, wechat_unionid, weibo_openid, qq_unionid');
         }
-        $ret = $this->updateProfile($username, [$field => $identifier], $isuid);
         $store = $this->client->getBindingStore();
-        if ($ret > 0 && $store !== null) {
+        $ret = $this->updateProfile($username, [$field => $identifier], $isuid);
+        $localWritten = false;
+        if ($store !== null) {
             $user = $this->getUser($username, $isuid);
             if (!empty($user['uid'])) {
                 $store->add((int) $user['uid'], $type, $identifier);
+                $localWritten = true;
             }
+        }
+        if ($ret > 0) {
+            return $ret;
+        }
+        if ($localWritten) {
+            return 1;
         }
         return $ret;
     }
 
     /**
-     * 解除当前账号对某种登录方式的绑定（清空对应扩展字段）
+     * 解除当前账号对某种登录方式的绑定：先从绑定存储中移除该类型的绑定关系，再清空 UCenter 对应扩展字段。
+     * 与注册/绑定一样，解绑也会对绑定关系做操作，保证登录时「先检查绑定」结果一致。
      *
      * @param string $username 用户名或 uid 字符串
      * @param string $type      LOGIN_TYPE_PHONE | LOGIN_TYPE_WECHAT_UNIONID | LOGIN_TYPE_WEIBO_OPENID | LOGIN_TYPE_QQ_UNIONID
@@ -277,13 +347,22 @@ class UserApi extends BaseApi
             throw new \InvalidArgumentException('不支持的绑定类型: ' . $type . '，支持: phone, wechat_unionid, weibo_openid, qq_unionid');
         }
         $store = $this->client->getBindingStore();
+        $localRemoved = false;
         if ($store !== null) {
             $user = $this->getUser($username, $isuid);
             if (!empty($user['uid'])) {
                 $store->remove((int) $user['uid'], $type);
+                $localRemoved = true;
             }
         }
-        return $this->updateProfile($username, [$field => ''], $isuid);
+        $ret = $this->updateProfile($username, [$field => ''], $isuid);
+        if ($ret > 0) {
+            return $ret;
+        }
+        if ($localRemoved) {
+            return 1;
+        }
+        return $ret;
     }
 
     /**

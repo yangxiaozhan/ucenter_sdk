@@ -48,7 +48,7 @@ $client = UCenterClient::fromDatabase([
 
 注册/登录/获取用户/编辑等**全部走 UCenter 接口**；仅**绑定关系**（手机/微信/微博/QQ ↔ 用户）存本地表 `uc_bindings`，便于按标识解析登录。
 
-1. 建表：执行 `server/schema.sql`（至少要有 `uc_bindings` 表）。
+1. 建表：执行 `server/schema.sql` 或 `server/schema_bindings_only.sql`（至少要有 `uc_bindings` 表；解绑为软删除，表含 `deleted_at` 字段。**已有表**请执行 `server/migration_add_deleted_at_to_uc_bindings.sql` 升级）。
 2. 初始化：
 
 ```php
@@ -82,6 +82,8 @@ $client->setTimeout(15);
 ```php
 // 用户注册
 $uid = $client->user()->register('username', 'password', 'user@example.com');
+// 可选：注册同时写入绑定（类型+标识），便于后续 类型+标识 登录先查绑定
+$uid = $client->user()->register('username', 'password', 'user@example.com', 0, '', '', UserApi::LOGIN_TYPE_PHONE, '13800138000');
 // $uid > 0 为成功（返回用户 ID），负数见文档错误码
 
 // 用户登录（支持用户名+密码，或 类型+标识 自动注册登录）
@@ -97,7 +99,7 @@ $res = $client->user()->login(UserApi::LOGIN_TYPE_PHONE, '13800138000', 0, false
     'email_domain' => 'myapp.local',
     'extra_profile' => ['nickname' => '昵称'],
 ]);
-// $res['status'] > 0 为成功（用户 ID），含 username、email 等
+// $res['status'] > 0 为成功（用户 ID），含 username、email 等；若已设置 JwtToken 则返回 access_token
 
 // 用户绑定：一个账号绑定手机/微信/微博/QQ 后，可用任意一种方式登录同一账号
 $client->user()->bind('username', UserApi::LOGIN_TYPE_PHONE, '13800138000');       // 绑定手机
@@ -106,14 +108,19 @@ $client->user()->bind('username', UserApi::LOGIN_TYPE_WEIBO_OPENID, 'weibo_openi
 $client->user()->bind('username', UserApi::LOGIN_TYPE_QQ_UNIONID, 'qq_unionid');
 $client->user()->unbind('username', UserApi::LOGIN_TYPE_PHONE);                    // 解绑手机
 $bindings = $client->user()->getBindings('username');  // 查看已绑定：phone, wechat_unionid, weibo_openid, qq_union_id
-// 说明：绑定后用该标识 login(类型, 标识) 登录到同一账号，需后端支持（按标识查用户或绑定时同步创建同 uid 的标识账号）
+// 说明：绑定后用该标识 login(类型, 标识) 登录到同一账号；解绑为软删除（不 DELETE，仅设置 deleted_at）
 
-// 为登录用户颁发 JWT token（需配置 JWT 密钥）
+// 登录成功直接返回 access_token（JWT）：设置 JwtToken 后，login 成功时自动签发并写入返回
 use UCenter\Sdk\Jwt\JwtToken;
+$client->setJwtToken(new JwtToken('your_jwt_secret', 7200));
+$res = $client->user()->login('username', 'password');
+// $res['access_token'] 为 JWT，可用于 Authorization: Bearer xxx
+// 验证 token
+$payload = $client->getJwtToken()->verify($res['access_token']);  // 含 sub、username、iat、exp 等
+// 或手动颁发/验证
 $jwt = new JwtToken('your_jwt_secret', 7200);
 $token = $jwt->issue(['sub' => (string)$res['status'], 'username' => $res['username'] ?? '']);
-// 验证 token
-$payload = $jwt->verify($token);  // 含 sub、username、iat、exp 等
+$payload = $jwt->verify($token);
 
 // 获取用户信息（含扩展字段：phone, wechat_unionid, nickname, avatar, qq_union_id, weibo_openid, douyin_openid, is_member 等）
 $user = $client->user()->getUser('username');        // 按用户名
@@ -249,22 +256,33 @@ $client->setHttpClient(function (string $url, array $headers, string $body): arr
 });
 ```
 
-## 测试所有接口（Demo）
+## 测试
 
-项目提供 `demo/demo.php` 用于一次性测试各模块接口是否可用。
+### 单元测试
 
-1. 复制配置并填写 UCenter 地址与密钥：
-   ```bash
-   cp demo/config.example.php demo/config.php
-   # 编辑 demo/config.php，填写 base_url、app_id、secret
-   ```
-2. 或在当前环境设置环境变量：`UCENTER_BASE_URL`、`UCENTER_APP_ID`、`UCENTER_SECRET`。
-3. 在项目根目录执行：
-   ```bash
-   composer install
-   php demo/demo.php
-   ```
-4. 根据输出的 `[OK]` / `[FAIL]` 查看各接口调用结果。Demo 会创建并删除一个测试用户，其它接口为只读或使用固定参数，可按需修改 `demo/demo.php`。
+```bash
+composer install
+./vendor/bin/phpunit
+```
+
+### 脚本真实调用（call_login.php）
+
+`scripts/call_login.php` 支持多种运行模式，可对 UCenter 发起真实请求，便于自测：
+
+- **login**：登录（用户名+密码 或 类型+标识），可选 JWT 签发 access_token、本地绑定库
+- **parse_token**：解析 JWT，输出载荷
+- **get_bindings / bind / unbind**：绑定关系查询/绑定/解绑
+- **update_profile**：设置昵称、头像、手机号、邮箱
+
+配置方式：编辑脚本顶部「配置区」或使用环境变量（如 `UC_RUN_MODE`、`UC_BASE_URL`、`UC_APP_ID`、`UC_SECRET` 等）。详见 `scripts/README.md`。
+
+```bash
+php scripts/call_login.php
+```
+
+### Demo（若存在 demo 目录）
+
+若项目包含 `demo/demo.php`，可复制 `demo/config.example.php` 为 `demo/config.php` 并填写 base_url、app_id、secret 后执行 `php demo/demo.php` 测试各模块接口。
 
 ## 文档与错误码
 
@@ -281,17 +299,25 @@ $client->setHttpClient(function (string $url, array $headers, string $body): arr
 
 ```
 src/
-├── UCenterClient.php      # 客户端：签名、Token、HTTP 请求
-├── UCenterSdk.php         # 入口便捷方法
+├── UCenterClient.php      # 客户端：签名、Token、HTTP 请求，可选 JwtToken / BindingStore
 ├── Api/
 │   ├── BaseApi.php
-│   ├── UserApi.php        # 用户注册/登录/获取/编辑/删除/同步登录等
+│   ├── UserApi.php        # 用户注册/登录/获取/编辑/绑定/解绑/同步登录等
 │   ├── PmApi.php          # 短消息
 │   ├── FriendApi.php      # 好友
 │   ├── CreditApi.php      # 积分
 │   └── TagApi.php         # 标签
-└── Exception/
-    └── UCenterException.php
+├── Backend/               # 直连数据库时用
+│   ├── BackendInterface.php
+│   └── DatabaseBackend.php
+├── Binding/               # 混合模式：绑定关系存本地
+│   ├── BindingStoreInterface.php
+│   └── DatabaseBindingStore.php
+├── Jwt/
+│   └── JwtToken.php       # JWT 签发与验证，登录成功可返回 access_token
+├── Exception/
+│   └── UCenterException.php
+└── Sms/、Wechat/          # 短信、微信模板消息等
 ```
 
 ## 参与贡献

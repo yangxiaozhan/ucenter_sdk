@@ -61,8 +61,9 @@ class JwtToken
         $header = ['typ' => 'JWT', 'alg' => self::ALG];
         $headerB64 = $this->base64UrlEncode(json_encode($header));
         $payloadB64 = $this->base64UrlEncode(json_encode($claims));
-        $signature = $this->sign($headerB64 . '.' . $payloadB64);
-        return $headerB64 . '.' . $payloadB64 . '.' . $signature;
+        $signatureRaw = $this->sign($headerB64 . '.' . $payloadB64);
+        $signatureB64 = $this->base64UrlEncode($signatureRaw);
+        return $headerB64 . '.' . $payloadB64 . '.' . $signatureB64;
     }
 
     /**

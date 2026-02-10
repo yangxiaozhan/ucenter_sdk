@@ -45,18 +45,25 @@ class DatabaseBindingStore implements BindingStoreInterface
     {
         $field = self::TYPE_FIELD[$type] ?? $type;
         $this->pdo->prepare('DELETE FROM uc_bindings WHERE type = ? AND identifier = ?')->execute([$field, $identifier]);
-        $this->pdo->prepare('INSERT INTO uc_bindings (uid, type, identifier) VALUES (?, ?, ?)')->execute([$uid, $field, $identifier]);
+        $stmt = $this->pdo->prepare('UPDATE uc_bindings SET identifier = ?, deleted_at = NULL WHERE uid = ? AND type = ?');
+        $stmt->execute([$identifier, $uid, $field]);
+        if ($stmt->rowCount() === 0) {
+            $this->pdo->prepare('INSERT INTO uc_bindings (uid, type, identifier) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE identifier = VALUES(identifier), deleted_at = NULL')->execute([$uid, $field, $identifier]);
+        }
     }
 
+    /**
+     * 解绑：软删除，不执行 DELETE，仅将 deleted_at 置为当前时间
+     */
     public function remove(int $uid, string $type): void
     {
         $field = self::TYPE_FIELD[$type] ?? $type;
-        $this->pdo->prepare('DELETE FROM uc_bindings WHERE uid = ? AND type = ?')->execute([$uid, $field]);
+        $this->pdo->prepare('UPDATE uc_bindings SET deleted_at = NOW() WHERE uid = ? AND type = ? AND deleted_at IS NULL')->execute([$uid, $field]);
     }
 
     public function getByUid(int $uid): array
     {
-        $stmt = $this->pdo->prepare('SELECT type, identifier FROM uc_bindings WHERE uid = ?');
+        $stmt = $this->pdo->prepare('SELECT type, identifier FROM uc_bindings WHERE uid = ? AND deleted_at IS NULL');
         $stmt->execute([$uid]);
         $out = ['phone' => '', 'wechat_unionid' => '', 'weibo_openid' => '', 'qq_union_id' => ''];
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -68,7 +75,7 @@ class DatabaseBindingStore implements BindingStoreInterface
     public function findUid(string $type, string $identifier): ?int
     {
         $field = self::TYPE_FIELD[$type] ?? $type;
-        $stmt = $this->pdo->prepare('SELECT uid FROM uc_bindings WHERE type = ? AND identifier = ? LIMIT 1');
+        $stmt = $this->pdo->prepare('SELECT uid FROM uc_bindings WHERE type = ? AND identifier = ? AND deleted_at IS NULL LIMIT 1');
         $stmt->execute([$field, $identifier]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ? (int) $row['uid'] : null;
