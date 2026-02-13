@@ -28,5 +28,6 @@ mysql -u root -p 数据库名 < server/schema.sql
 主逻辑（注册/登录/获取用户/编辑）走 **UCenter 接口**；仅**绑定关系**（手机/微信/微博/QQ ↔ 用户）存本地表 `uc_bindings`。**不需要** `uc_users` 表。
 
 1. 建表：执行 `server/schema_bindings_only.sql`（仅建 `uc_bindings`）或只执行 `schema.sql` 里的 `uc_bindings` 部分。
-2. 初始化：`UCenterClient::withBindingStore($baseUrl, $appId, $secret, $dbConfig)`。
-3. bind/unbind/getBindings 及「类型+标识」登录会读写本地 `uc_bindings`，其余请求走 UCenter。
+2. **已有表升级**：解绑改为软删除后需增加 `deleted_at` 字段，执行 `server/migration_add_deleted_at_to_uc_bindings.sql`。
+3. 初始化：`UCenterClient::withBindingStore($baseUrl, $appId, $secret, $dbConfig)`。
+4. bind/unbind/getBindings 及「类型+标识」登录会读写本地 `uc_bindings`，其余请求走 UCenter。**解绑（unbind）为软删除**，不执行 DELETE，仅设置 `deleted_at`。

@@ -14,6 +14,7 @@ use UCenter\Sdk\Backend\DatabaseBackend;
 use UCenter\Sdk\Binding\BindingStoreInterface;
 use UCenter\Sdk\Binding\DatabaseBindingStore;
 use UCenter\Sdk\Exception\UCenterException;
+use UCenter\Sdk\Jwt\JwtToken;
 
 /**
  * UCenter 客户端
@@ -42,6 +43,9 @@ class UCenterClient
 
     /** @var BindingStoreInterface|null 混合模式：主逻辑 UCenter HTTP，绑定关系存本地 DB */
     private ?BindingStoreInterface $bindingStore = null;
+
+    /** @var JwtToken|null 登录成功时用于签发用户 access_token（JWT） */
+    private ?JwtToken $jwtToken = null;
 
     public function __construct(string $baseUrl, string $appId, string $secret)
     {
@@ -75,6 +79,20 @@ class UCenterClient
     public function getBindingStore(): ?BindingStoreInterface
     {
         return $this->bindingStore;
+    }
+
+    /**
+     * 设置 JWT 签发器，登录成功时将签发用户 access_token 并写入返回结果
+     */
+    public function setJwtToken(JwtToken $jwtToken): self
+    {
+        $this->jwtToken = $jwtToken;
+        return $this;
+    }
+
+    public function getJwtToken(): ?JwtToken
+    {
+        return $this->jwtToken;
     }
 
     public function getBaseUrl(): string

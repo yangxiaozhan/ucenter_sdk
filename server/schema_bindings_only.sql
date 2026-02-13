@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS `uc_bindings` (
   `type` varchar(32) NOT NULL COMMENT 'phone|wechat_unionid|weibo_openid|qq_union_id',
   `identifier` varchar(128) NOT NULL COMMENT '手机号/unionid/openid',
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `deleted_at` datetime DEFAULT NULL COMMENT '解绑时为软删除时间，NULL 表示有效',
   PRIMARY KEY (`uid`, `type`),
   UNIQUE KEY `uk_type_identifier` (`type`, `identifier`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='绑定关系（混合模式）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='绑定关系（混合模式，解绑软删除）';
