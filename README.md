@@ -80,7 +80,7 @@ $client->setTimeout(15);
 ### 用户接口
 
 ```php
-// 用户注册
+// 用户注册（成功后自动与 uid=1 管理员互为好友，仅 HTTP/混合模式）
 $uid = $client->user()->register('username', 'password', 'user@example.com');
 // $uid > 0 为成功（返回用户 ID），负数见文档错误码
 
@@ -156,10 +156,12 @@ $client->user()->checkEmail('new@example.com');
 ### 短消息、好友、积分、标签
 
 ```php
-// 短消息
+// 短消息：以系统管理员(uid=1)身份给用户发站内信、用户查列表
+$client->pm()->sendFromSystem($toUid, '标题', '内容');   // 自动以 uid=1 发送
+$list = $client->pm()->getList($uid, 1, 20, 'inbox');   // 收件箱，count + data
 $client->pm()->checkNewPm($uid, $more);
 $client->pm()->send($fromUid, $toUsername, $subject, $message);
-$client->pm()->call('list', [...]);   // 其它接口见 document/html/pm.htm
+$client->pm()->call('ls', [...]);   // 其它接口见 document/html/pm.htm
 
 // 好友
 $client->friend()->add($uid, $friendid, $comment);

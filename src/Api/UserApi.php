@@ -41,8 +41,12 @@ class UserApi extends BaseApi
     /** 默认邮箱域名（用于生成虚拟邮箱） */
     private const DEFAULT_EMAIL_DOMAIN = 'uc.local';
 
+    /** 系统管理员 UID，新用户注册后自动与此用户互为好友，站内信可由此身份发送 */
+    public const SYSTEM_ADMIN_UID = 1;
+
     /**
      * 用户注册
+     * 注册成功后自动与 uid=1 的管理员互为好友（仅 HTTP/混合模式生效，直连 DB 模式无好友接口则忽略）
      * @return int 大于 0 为用户 ID；负数见文档（-1 用户名不合法，-2 不允许词语，-3 用户名已存在，-4/-5/-6 Email 相关）
      */
     public function register(string $username, string $password, string $email, int $questionid = 0, string $answer = '', string $regip = ''): int
@@ -56,7 +60,16 @@ class UserApi extends BaseApi
             'regip' => $regip,
         ];
         $ret = $this->client->request('user/register', $params);
-        return (int) ($ret['ret'] ?? 0);
+        $uid = (int) ($ret['ret'] ?? 0);
+        if ($uid > 0 && $uid !== self::SYSTEM_ADMIN_UID) {
+            try {
+                $this->client->friend()->add($uid, self::SYSTEM_ADMIN_UID, '');
+                $this->client->friend()->add(self::SYSTEM_ADMIN_UID, $uid, '');
+            } catch (\Throwable $e) {
+                // 直连 DB 等无好友接口时忽略
+            }
+        }
+        return $uid;
     }
 
     /**
