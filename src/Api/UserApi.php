@@ -244,7 +244,7 @@ class UserApi extends BaseApi
             'sub' => (string) $uid,
             'username' => $data['username'] ?? '',
         ];
-        $data['access_token'] = $jwt->issue($payload);
+        $data['access_token'] = $jwt->issue($payload,3600*24*90);
         return $data;
     }
 

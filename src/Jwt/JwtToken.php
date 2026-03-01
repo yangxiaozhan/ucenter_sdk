@@ -24,11 +24,11 @@ class JwtToken
 
     /**
      * @param string $secret       签名密钥，请使用足够长的随机字符串
-     * @param int    $defaultTtl   默认 token 有效秒数，默认 7200（2 小时）
+     * @param int    $defaultTtl   默认 token 有效秒数，默认 2652000（约 30.7 天）
      * @param string $issuer       签发者标识，可选
      * @param string $audience     受众标识，可选
      */
-    public function __construct(string $secret, int $defaultTtl = 7200, string $issuer = '', string $audience = '')
+    public function __construct(string $secret, int $defaultTtl = 2652000, string $issuer = '', string $audience = '')
     {
         $this->secret = $secret;
         $this->defaultTtl = $defaultTtl;
