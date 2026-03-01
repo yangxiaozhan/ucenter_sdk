@@ -41,10 +41,13 @@ class UserApi extends BaseApi
     /** 默认邮箱域名（用于生成虚拟邮箱） */
     private const DEFAULT_EMAIL_DOMAIN = 'jiuzhoufeiyi.com';
 
+    /** 系统管理员 UID，新用户注册后自动与此用户互为好友，站内信可由此身份发送 */
+    public const SYSTEM_ADMIN_UID = 1;
+
     /**
      * 用户注册
-     * 若启用绑定存储且传入 bindType/bindIdentifier，注册成功后会写入绑定关系（并更新用户扩展字段），
-     * 与「类型+标识登录」先查绑定的逻辑一致，避免注册方式不同导致登录失败。
+     * 注册成功后自动与 uid=1 的管理员互为好友（仅 HTTP/混合模式生效，直连 DB 模式无好友接口则忽略）。
+     * 若传入 bindType/bindIdentifier，注册成功后会写入绑定关系（并更新用户扩展字段），与「类型+标识登录」逻辑一致。
      *
      * @param string      $username       用户名
      * @param string      $password      密码
@@ -66,9 +69,16 @@ class UserApi extends BaseApi
             'answer' => $answer,
             'regip' => $regip,
         ];
-        // print_r($params);
         $ret = $this->client->request('user/register', $params);
         $uid = (int) ($ret['ret'] ?? 0);
+        if ($uid > 0 && $uid !== self::SYSTEM_ADMIN_UID) {
+            try {
+                $this->client->friend()->add($uid, self::SYSTEM_ADMIN_UID, '');
+                $this->client->friend()->add(self::SYSTEM_ADMIN_UID, $uid, '');
+            } catch (\Throwable $e) {
+                // 直连 DB 等无好友接口时忽略
+            }
+        }
         if ($uid > 0 && $bindType !== null && $bindIdentifier !== null && $bindType !== '' && $bindIdentifier !== '') {
             $field = self::LOGIN_TYPE_FIELD[$bindType] ?? null;
             if ($field !== null) {
